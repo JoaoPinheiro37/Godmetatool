@@ -1,0 +1,2 @@
+# Godmetatool
+auto Google dorking.
