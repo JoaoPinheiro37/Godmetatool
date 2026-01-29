@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import time
+import csv
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+
+# ================================
+# GodMetaTool - by.: jpentest.sec 
+# ================================
+
+options = Options()
+options.add_argument('--headless')
+options.add_argument('--disable-gpu')
+options.add_argument('--window-size=1920,1080')
+options.add_argument('--no-sandbox')
+options.add_argument('--disable-dev-shm-usage')
+options.add_argument('--log-level=3')
+options.add_argument('user-agent=Mozilla/5.0')
+
+driver = webdriver.Chrome(options=options)
+
+def search_dork(engine_url, query, pages=5, ext_filter=None):
+    links = []
+    for page in range(pages):
+        url = engine_url.format(query=query, start=page*10)
+        driver.get(url)
+        time.sleep(3)
+        elems = driver.find_elements(By.XPATH, "//a[@href]")
+        for e in elems:
+            href = e.get_attribute("href")
+            if href:
+                if ext_filter:
+                    if href.lower().endswith(ext_filter):
+                        links.append(href)
+                else:
+                    if any(href.lower().endswith(ext) for ext in ['.pdf','.doc','.docx','.txt','.csv']):
+                        links.append(href)
+    return list(set(links))
+
+
+def download_file(link, session_dir):
+    filename = os.path.join(session_dir, os.path.basename(link))
+    print(f"[DOWNLOAD] Downloading: {link}")
+    os.system(f"wget -q --timeout=15 --tries=2 '{link}' -O '{filename}'")
+    return filename
+
+
+def extract_metadata_summary(file_path):
+    autor = titulo = data = ''
+    try:
+        output = subprocess.check_output(['exiftool', file_path], text=True)
+        for line in output.split('\n'):
+            if 'Author' in line:
+                autor = line.split(':',1)[1].strip()
+            if 'Title' in line:
+                titulo = line.split(':',1)[1].strip()
+            if 'Create Date' in line:
+                data = line.split(':',1)[1].strip()
+    except:
+        pass
+    return autor, titulo, data
+
+
+def download_and_metadata(links, session_dir):
+    os.makedirs(session_dir, exist_ok=True)
+    report_csv = os.path.join(session_dir, "metadata_report.csv")
+    report_html = os.path.join(session_dir, "metadata_report.html")
+
+    with open(report_csv, 'w', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['File','Author','Title','Date'])
+
+    with open(report_html, 'w', encoding='utf-8') as htmlfile:
+        htmlfile.write('<html><head><title>Report</title></head><body><h1>Metadata</h1><table border=1>')
+        htmlfile.write('<tr><th>File</th><th>Author</th><th>Title</th><th>Date</th></tr>')
+
+    metadata_list = []
+
+    def process_link(link):
+        file_path = download_file(link, session_dir)
+        autor, titulo, data = extract_metadata_summary(file_path)
+        metadata_list.append(file_path)
+        with open(report_csv, 'a', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([file_path, autor, titulo, data])
+        with open(report_html, 'a', encoding='utf-8') as htmlfile:
+            htmlfile.write(f'<tr><td>{file_path}</td><td>{autor}</td><td>{titulo}</td><td>{data}</td></tr>')
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        executor.map(process_link, links)
+
+    with open(report_html, 'a', encoding='utf-8') as htmlfile:
+        htmlfile.write('</table></body></html>')
+
+    return metadata_list
+
+# =============================
+# Execution
+# =============================
+
+bulk_mode = input("Do you want to use a list of sites? (y/n): ")
+sites = []
+if bulk_mode == 'y':
+    lista = input("Enter the path to the file with the list of sites: ")
+    with open(lista, 'r') as f:
+        sites = [line.strip() for line in f if line.strip()]
+else:
+    site = input("Enter the target site (e.g., example.com): ")
+    sites = [site]
+
+ext_choice = input("Enter the desired extension (e.g., pdf, docx) or press Enter for all: ")
+mode_aggressive = input("Aggressive mode (20 pages)? (y/n): ")
+pages = 20 if mode_aggressive == 'y' else 5
+
+engines = {
+    'Google': 'https://www.google.com/search?q={query}&start={start}',
+    'Bing': 'https://www.bing.com/search?q={query}&first={start}',
+    'DuckDuckGo': 'https://duckduckgo.com/?q={query}&s={start}',
+    'Startpage': 'https://www.startpage.com/sp/search?q={query}&page={start}',
+    'Mojeek': 'https://www.mojeek.com/search?q={query}&page={start}'
+}
+
+all_links = []
+for site in sites:
+    dork = f"site:{site} filetype:{ext_choice}" if ext_choice else f"site:{site} filetype:pdf OR filetype:doc OR filetype:docx"
+    for name, url in engines.items():
+        print(f"Searching on {name} for {site}...")
+        links = search_dork(url, dork, pages=pages, ext_filter=f".{ext_choice}" if ext_choice else None)
+        all_links.extend(links)
+
+all_links = list(set(all_links))
+print(f"Found {len(all_links)} files.")
+
+session_dir = f"downloads/session_{int(time.time())}"
+metadata_files = download_and_metadata(all_links, session_dir)
+print(f"Reports saved in {session_dir}")
+
+show_meta = input("Show full metadata of downloaded files? (y/n): ")
+if show_meta.lower() == 'y':
+    print("\n=== Full metadata of downloaded files ===")
+    for file_path in metadata_files:
+        print(f"\nFile: {file_path}\n")
+        try:
+            output = subprocess.check_output(['exiftool', file_path], text=True)
+            print(output)
+        except:
+            print("[ERROR] Could not read metadata.")
+
+driver.quit()
+
